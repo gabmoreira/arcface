@@ -73,7 +73,7 @@ class Faces:
             Search for faces in the self.face list according to
             user-specified criteria
         """
-        selection = {}
+        selection = []
         for i, face in enumerate(self.faces):
             flags = [True]*4
             if 'src_hash' in kwargs.keys() and face['src_hash'] != kwargs['src_hash']:
@@ -86,7 +86,7 @@ class Faces:
                 flags[3] = False
 
             if all(flags):
-                selection[i] = face
+                selection.append(i)
 
         if len(selection) == 0:
             print('No face matches the search criteria')

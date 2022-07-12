@@ -24,8 +24,9 @@ from utils import *
 
 
 class Faces:
-    def __init__(self, ROOT):
-        self.ROOT = ROOT
+    def __init__(self, ROOT, device):
+        self.ROOT   = ROOT
+        self.device = device
         self.sync_folders()
         
         self.BOUNDING_BX_PATH = os.path.join(ROOT, 'boxes')
@@ -201,7 +202,7 @@ class Faces:
         bar = tqdm(total=len(self.faces), dynamic_ncols=True, desc='Computing features') 
         for i in range(len(self.faces)): 
             with torch.no_grad():
-                img_tensor = totensor(resize(self.faces[i]['img']))
+                img_tensor = totensor(resize(self.faces[i]['img'])).to(self.device)
                 features   = model(img_tensor.unsqueeze(0), return_features=True)
                 features   = features.cpu().detach().numpy()
                 self.faces[i]['features'] = features

@@ -102,9 +102,9 @@ class FaceLoader:
                 flags[0] = False 
             if 'src_name' in kwargs.keys() and face['src_name'] != kwargs['src_name']:
                 flags[1] = False
-            if 'from_date' in kwargs.keys() and face['time_src_end'] <= datetime.strptime(kwargs['from_date'], '%Y%d%m%H%M%S'):
+            if 'from_date' in kwargs.keys() and face['time_src_end'] <= datetime.strptime(kwargs['from_date'], '%Y%m%d%H%M%S'):
                 flags[2] = False
-            if 'to_date' in kwargs.keys() and face['time_src_begin'] >= datetime.strptime(kwargs['to_date'], '%Y%d%m%H%M%S'):
+            if 'to_date' in kwargs.keys() and face['time_src_begin'] >= datetime.strptime(kwargs['to_date'], '%Y%m%d%H%M%S'):
                 flags[3] = False
 
             if all(flags):

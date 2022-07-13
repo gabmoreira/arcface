@@ -11,8 +11,7 @@ import random
 import numpy as np
 from tqdm import tqdm 
 from PIL import Image
-from datetime import datetime
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import seaborn as sns
 import matplotlib.pyplot as plt
@@ -21,9 +20,9 @@ import torch
 import torchvision.transforms as transforms
 
 from utils import *
+from metrics import *
 
-
-class Faces:
+class FaceLoader:
     def __init__(self, ROOT, device):
         self.ROOT   = ROOT
         self.device = device
@@ -36,7 +35,8 @@ class Faces:
         self.bounding_bx_filenames = os.listdir(self.BOUNDING_BX_PATH)
         self.crop_filenames        = os.listdir(self.CROP_PATH)
 
-        self.faces = []
+        self.faces    = []
+        self.features = None
 
         with open(os.path.join('retrieved', "data.json"), 'r') as fp:
             self.data_dict = json.load(fp)
@@ -44,19 +44,41 @@ class Faces:
         self.process_faces()
 
 
-    def get_bounding_box(self, i):
+    def show(self, index):
+        plt.figure(figsize=(24,8))
+        plt.subplot(1,2,1)
+        plt.imshow(Image.open(self.faces[index]['crop_filename']))
+        plt.title("ID {}".format(index))
+        plt.axis('off')
+        plt.subplot(1,2,2)
+        plt.imshow(Image.open(self.faces[index]['bounding_bx_filename']))
+        plt.title("Source: {}".format(self.data_dict[self.faces[index]['src_hash']]))
+        plt.axis('off')
+
+
+    def get_bounding_box(self, **kwargs):
         """
-            Return Pillow bounding-box image of the i-th face in the list
+            Return Pillow bounding-box image
         """
-        img = Image.open(self.faces[i]['bounding_bx_filename'])
+        assert len(kwargs) == 1
+        assert 'index' in kwargs.keys() or 'filename' in kwargs.keys()
+        if 'index' in kwargs.keys():
+            img = Image.open(self.faces[kwargs['index']]['bounding_bx_filename'])
+        elif 'filename' in kwargs.keys():
+            img = Image.open(kwargs['filename'])
         return img
 
 
-    def get_crop(self, i):
+    def get_crop(self, **kwargs):
         """
-            Return Pillow crop image of the i-th face in the list
+            Return Pillow crop image
         """
-        img = Image.open(self.faces[i]['crop_filename'])
+        assert len(kwargs) == 1
+        assert 'index' in kwargs.keys() or 'filename' in kwargs.keys()
+        if 'index' in kwargs.keys():
+            img = Image.open(self.faces[kwargs['index']]['crop_filename'])
+        elif 'filename' in kwargs.keys():
+            img = Image.open(kwargs['filename'])
         return img
 
 
@@ -175,7 +197,7 @@ class Faces:
                 src_filename = self.data_dict[hashed_path]
                 src_begin, src_end = get_timestamps(src_filename)
 
-                face = {'img'                  : Image.open(os.path.join(self.CROP_PATH, filename)),
+                face = {'img'                  : self.nodistort_resize(Image.open(os.path.join(self.CROP_PATH, filename))),
                         'src_hash'             : hashed_path,
                         'src_name'             : src_filename,
                         'frame_no'             : frame_no,
@@ -187,7 +209,29 @@ class Faces:
 
                 self.faces.append(face)
 
-        print("Ready. {} face images in the database.\n".format(len(self.faces)))
+        print("{} face images available\n".format(len(self.faces)))
+
+
+    def nodistort_resize(self, im, new_size=240):
+        """
+        """
+
+        new_im = np.zeros([new_size,new_size,3])
+
+        d = np.argmax(im.size)
+        scaling = new_size / im.size[d]
+        effective_size      = [0,0]
+        effective_size[d]   = new_size
+        effective_size[1-d] = int(np.floor(scaling * im.size[1-d]))
+        margin = (240 - effective_size[1-d]) // 2
+        if d == 0:
+            new_im[margin:margin+effective_size[1-d],:,:] += np.array(im.resize(effective_size))
+        elif d == 1:
+            new_im[:,margin:margin+effective_size[1-d],:] += np.array(im.resize(effective_size))
+        new_im = np.uint8(new_im)
+        new_im = Image.fromarray(new_im)
+
+        return new_im
 
 
     def compute_features(self, model):
@@ -195,19 +239,69 @@ class Faces:
             Get face embeddings and store them in the dictionary
             with the rest of the face attributes
         """
+        self.features = np.zeros((512, len(self.faces)))
+
         model.eval()
         totensor = transforms.ToTensor()
         resize   = transforms.Resize((224,224))
+        flip     = transforms.RandomHorizontalFlip(1.0)
 
         bar = tqdm(total=len(self.faces), dynamic_ncols=True, desc='Computing features') 
         for i in range(len(self.faces)): 
             with torch.no_grad():
                 img_tensor = totensor(resize(self.faces[i]['img'])).to(self.device)
-                features   = model(img_tensor.unsqueeze(0), return_features=True)
-                features   = features.cpu().detach().numpy()
-                self.faces[i]['features'] = features
+                feat_r     = model(img_tensor.unsqueeze(0), return_features=True)
+                feat_r     = feat_r.cpu().detach().numpy()
+                feat_l     = model(flip(img_tensor).unsqueeze(0), return_features=True)
+                feat_l     = feat_l.cpu().detach().numpy()
+                feat       = 0.5*(feat_r + feat_l)
+                self.features[:,i] += feat.reshape(512)
             bar.update()
         bar.close()
+
+
+    def compute_similarities(self):
+        self.sim = (self.features / np.linalg.norm(self.features,axis=0)).T @ (self.features / np.linalg.norm(self.features,axis=0))
+
+        bar = tqdm(total=len(self.faces), dynamic_ncols=True, desc='Computing similarity') 
+        for i in range(len(self.faces)):
+            self.sim[i,i] = 0.0
+            for j in range(i+1,len(self.faces)):
+                if self.faces[i]['src_hash'] == self.faces[j]['src_hash']:
+                    if abs(self.faces[i]['frame_no'] - self.faces[j]['frame_no']) < 500:
+                        self.sim[i,j] = min(self.sim[i,j]+0.05, 1.0)
+                        self.sim[j,i] = min(self.sim[j,i]+0.05, 1.0)
+            bar.update()
+        bar.close()
+
+
+    def find_matches(self, index, num_matches):
+        """
+        """
+        similarity = self.sim[index,:]
+        similarity[index] = 0
+        idx = np.argsort(-similarity)
+        return idx[:num_matches], similarity[idx[:num_matches]]
+
+
+    def show_matches(self, index, num_matches):
+        """
+        """
+        idx, similarity = self.find_matches(index, num_matches)
+
+        plt.figure(figsize=(30,15))
+        plt.subplot(num_matches // 10, 10, 1)
+        plt.imshow(self.faces[index]['img'])
+        plt.title("Query", fontsize=20)
+        plt.axis('off')
+
+        for k in range(1, 10*(num_matches // 10) ):
+            plt.subplot(num_matches // 10, 10, k+1)
+            plt.imshow(self.faces[idx[k]]['img'])
+            title = "#{}   {:.0f}% \n {}".format(idx[k], similarity[k]*100, 
+            self.faces[idx[k]]['time_src_begin'] + timedelta(0,np.floor(self.faces[idx[k]]['frame_no']/25)))
+            plt.title(title, fontsize=9)
+            plt.axis('off')
 
 
     def __getitem__(self, i):
